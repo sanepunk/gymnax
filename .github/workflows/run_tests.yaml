@@ -36,7 +36,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ['3.10', '3.11', '3.12', '3.13']
+        python: ['3.10', '3.11', '3.12', '3.13', '3.14']
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
@@ -84,6 +84,83 @@ jobs:
       - name: Install locked dependencies
         run: uv sync --locked --all-extras
       - run: uv run python -m pytest -vv tests/test_reproduction_matrix.py -k 'cartpole_jitted_step_under_x64 or acrobot_jitted_step_under_x64'
+
+  dependency-range:
+    name: ${{ matrix.label }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The universal lock resolves jax 0.6.2 below Python 3.11 and
+          # 0.10.2/0.11.1 above it, so the test matrix never installs 0.7-0.9
+          # -- the releases the relaxed `jax>=0.6` bound admits past the old
+          # `<0.7` cap. flax is reinstalled alongside jax so the resolver can
+          # pick a build compatible with the pinned version; recent flax
+          # requires jax >=0.8.1.
+          - label: JAX 0.7
+            python: '3.12'
+            extras: 'dev,test,visualize'
+            pins: "'jax==0.7.2' 'jaxlib==0.7.2' flax"
+          - label: JAX 0.8
+            python: '3.12'
+            extras: 'dev,test,visualize'
+            pins: "'jax==0.8.3' 'jaxlib==0.8.3' flax"
+          - label: JAX 0.9
+            python: '3.12'
+            extras: 'dev,test,visualize'
+            pins: "'jax==0.9.2' 'jaxlib==0.9.2' flax"
+          # The lock resolves gymnasium 1.3.0 everywhere, so nothing exercises
+          # the declared floor or the 1.2 series in between.
+          - label: Gymnasium floor
+            python: '3.12'
+            extras: 'dev,test,visualize'
+            pins: "'gymnasium[classic-control]==1.1.0'"
+          - label: Gymnasium 1.2
+            python: '3.12'
+            extras: 'dev,test,visualize'
+            pins: "'gymnasium[classic-control]==1.2.0'"
+          # Python 3.14 declares a narrower window than the rest (jax >=0.8.1,
+          # flax >=0.12.3, gymnasium[classic-control] >=1.3). Install exactly
+          # those minima so the marker-encoded floor is exercised rather than
+          # assumed -- the lock resolves well above it.
+          - label: Python 3.14 visualization minimum
+            python: '3.14'
+            extras: 'dev,test,visualize'
+            pins: "'jax==0.8.1' 'jaxlib==0.8.1' 'flax==0.12.3' 'gymnasium[classic-control]==1.3.0'"
+          # Core Gymnasium 1.1 works on Python 3.14; only the visualization
+          # extra needs Gymnasium 1.3 for pygame-ce wheels.
+          - label: Python 3.14 core minimum
+            python: '3.14'
+            extras: 'dev,test'
+            pins: "'jax==0.8.1' 'jaxlib==0.8.1' 'flax==0.12.3' 'gymnasium==1.1.0'"
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+      # Resolve every range case from scratch. Overlaying older Gymnasium
+      # releases on the lock would leave pygame and pygame-ce installed in the
+      # same import namespace.
+      - name: Create clean environment
+        run: uv venv
+      - name: Install Gymnax with ${{ matrix.label }}
+        run: uv pip install -e ".[${{ matrix.extras }}]" ${{ matrix.pins }}
+      - name: Verify dependency consistency
+        run: uv pip check
+      - name: Run tests
+        if: matrix.extras == 'dev,test,visualize'
+        run: uv run --no-sync python -m pytest -vv --all tests
+      - name: Run core tests
+        if: matrix.extras == 'dev,test'
+        run: uv run --no-sync python -m pytest -vv --all tests --ignore=tests/test_visualizer.py
 
   brax:
     name: Brax adapter
